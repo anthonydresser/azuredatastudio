@@ -78,7 +78,8 @@ const sqlBuiltInExtensions = [
 	'import',
 	'profiler',
 	'admin-pack',
-	'big-data-cluster'
+	'big-data-cluster',
+	'dacfx'
 ];
 var azureExtensions = ['azurecore', 'mssql'];
 
