@@ -7,8 +7,8 @@ import { URI } from 'vs/base/common/uri';
 import { suggestFilename } from 'vs/base/common/mime';
 import { memoize } from 'vs/base/common/decorators';
 import { PLAINTEXT_MODE_ID } from 'vs/editor/common/modes/modesRegistry';
-import * as paths from 'vs/base/common/paths';
-import * as resources from 'vs/base/common/resources';
+import { basename } from 'vs/base/common/path';
+import { basenameOrAuthority, dirname } from 'vs/base/common/resources';
 import { EditorInput, IEncodingSupport, EncodingMode, ConfirmResult, Verbosity } from 'vs/workbench/common/editor';
 import { UntitledEditorModel } from 'vs/workbench/common/editor/untitledEditorModel';
 import { IInstantiationService } from 'vs/platform/instantiation/common/instantiation';
@@ -17,6 +17,7 @@ import { ITextFileService } from 'vs/workbench/services/textfile/common/textfile
 import { telemetryURIDescriptor } from 'vs/platform/telemetry/common/telemetryUtils';
 import { IHashService } from 'vs/workbench/services/hash/common/hashService';
 import { ILabelService } from 'vs/platform/label/common/label';
+import { IResolvedTextEditorModel } from 'vs/editor/common/services/resolverService';
 
 /**
  * An editor input to be used for untitled text buffers.
@@ -25,9 +26,8 @@ export class UntitledEditorInput extends EditorInput implements IEncodingSupport
 
 	static readonly ID: string = 'workbench.editors.untitledEditorInput';
 
-	private _hasAssociatedFilePath: boolean;
 	private cachedModel: UntitledEditorModel;
-	private modelResolve: Promise<UntitledEditorModel>;
+	private modelResolve?: Promise<UntitledEditorModel & IResolvedTextEditorModel>;
 
 	private readonly _onDidModelChangeContent: Emitter<void> = this._register(new Emitter<void>());
 	get onDidModelChangeContent(): Event<void> { return this._onDidModelChangeContent.event; }
@@ -36,10 +36,10 @@ export class UntitledEditorInput extends EditorInput implements IEncodingSupport
 	get onDidModelChangeEncoding(): Event<void> { return this._onDidModelChangeEncoding.event; }
 
 	constructor(
-		private resource: URI,
-		hasAssociatedFilePath: boolean,
-		private modeId: string,
-		private initialValue: string,
+		private readonly resource: URI,
+		private readonly _hasAssociatedFilePath: boolean,
+		private readonly modeId: string,
+		private readonly initialValue: string,
 		private preferredEncoding: string,
 		@IInstantiationService private readonly instantiationService: IInstantiationService,
 		@ITextFileService private readonly textFileService: ITextFileService,
@@ -47,8 +47,6 @@ export class UntitledEditorInput extends EditorInput implements IEncodingSupport
 		@ILabelService private readonly labelService: ILabelService
 	) {
 		super();
-
-		this._hasAssociatedFilePath = hasAssociatedFilePath;
 	}
 
 	get hasAssociatedFilePath(): boolean {
@@ -63,7 +61,7 @@ export class UntitledEditorInput extends EditorInput implements IEncodingSupport
 		return this.resource;
 	}
 
-	getModeId(): string {
+	getModeId(): string | null {
 		if (this.cachedModel) {
 			return this.cachedModel.getModeId();
 		}
@@ -72,44 +70,38 @@ export class UntitledEditorInput extends EditorInput implements IEncodingSupport
 	}
 
 	getName(): string {
-		return this.hasAssociatedFilePath ? resources.basenameOrAuthority(this.resource) : this.resource.path;
+		return this.hasAssociatedFilePath ? basenameOrAuthority(this.resource) : this.resource.path;
 	}
 
 	@memoize
 	private get shortDescription(): string {
-		return paths.basename(this.labelService.getUriLabel(resources.dirname(this.resource)));
+		return basename(this.labelService.getUriLabel(dirname(this.resource)));
 	}
 
 	@memoize
 	private get mediumDescription(): string {
-		return this.labelService.getUriLabel(resources.dirname(this.resource), { relative: true });
+		return this.labelService.getUriLabel(dirname(this.resource), { relative: true });
 	}
 
 	@memoize
 	private get longDescription(): string {
-		return this.labelService.getUriLabel(resources.dirname(this.resource));
+		return this.labelService.getUriLabel(dirname(this.resource));
 	}
 
-	getDescription(verbosity: Verbosity = Verbosity.MEDIUM): string {
+	getDescription(verbosity: Verbosity = Verbosity.MEDIUM): string | null {
 		if (!this.hasAssociatedFilePath) {
 			return null;
 		}
 
-		let description: string;
 		switch (verbosity) {
 			case Verbosity.SHORT:
-				description = this.shortDescription;
-				break;
+				return this.shortDescription;
 			case Verbosity.LONG:
-				description = this.longDescription;
-				break;
+				return this.longDescription;
 			case Verbosity.MEDIUM:
 			default:
-				description = this.mediumDescription;
-				break;
+				return this.mediumDescription;
 		}
-
-		return description;
 	}
 
 	@memoize
@@ -127,25 +119,21 @@ export class UntitledEditorInput extends EditorInput implements IEncodingSupport
 		return this.labelService.getUriLabel(this.resource);
 	}
 
-	getTitle(verbosity: Verbosity): string {
+	getTitle(verbosity: Verbosity): string | null {
 		if (!this.hasAssociatedFilePath) {
 			return this.getName();
 		}
 
-		let title: string;
 		switch (verbosity) {
 			case Verbosity.SHORT:
-				title = this.shortTitle;
-				break;
+				return this.shortTitle;
 			case Verbosity.MEDIUM:
-				title = this.mediumTitle;
-				break;
+				return this.mediumTitle;
 			case Verbosity.LONG:
-				title = this.longTitle;
-				break;
+				return this.longTitle;
 		}
 
-		return title;
+		return null;
 	}
 
 	isDirty(): boolean {
@@ -214,7 +202,7 @@ export class UntitledEditorInput extends EditorInput implements IEncodingSupport
 		}
 	}
 
-	resolve(): Promise<UntitledEditorModel> {
+	resolve(): Promise<UntitledEditorModel & IResolvedTextEditorModel> {
 
 		// Join a model resolve if we have had one before
 		if (this.modelResolve) {

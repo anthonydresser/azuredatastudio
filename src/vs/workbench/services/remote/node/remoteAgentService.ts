@@ -24,6 +24,7 @@ export interface IRemoteAgentEnvironment {
 	globalStorageHome: URI;
 	extensions: IExtensionDescription[];
 	os: OperatingSystem;
+	syncExtensions: boolean;
 }
 
 export interface IRemoteAgentService {
@@ -38,5 +39,5 @@ export interface IRemoteAgentConnection {
 	getEnvironment(): Promise<IRemoteAgentEnvironment | null>;
 
 	getChannel<T extends IChannel>(channelName: string): T;
-	registerChannel<T extends IServerChannel<RemoteAgentConnectionContext>>(channelName: string, channel: T);
+	registerChannel<T extends IServerChannel<RemoteAgentConnectionContext>>(channelName: string, channel: T): void;
 }

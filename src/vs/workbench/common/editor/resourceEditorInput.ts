@@ -19,15 +19,12 @@ export class ResourceEditorInput extends EditorInput {
 
 	static readonly ID: string = 'workbench.editors.resourceEditorInput';
 
-	private modelReference: Promise<IReference<ITextEditorModel>>;
-	private resource: URI;
-	private name: string;
-	private description: string;
+	private modelReference: Promise<IReference<ITextEditorModel>> | null;
 
 	constructor(
-		name: string,
-		description: string,
-		resource: URI,
+		private name: string,
+		private description: string | null,
+		private readonly resource: URI,
 		@ITextModelService private readonly textModelResolverService: ITextModelService,
 		@IHashService private readonly hashService: IHashService
 	) {
@@ -57,7 +54,7 @@ export class ResourceEditorInput extends EditorInput {
 		}
 	}
 
-	getDescription(): string {
+	getDescription(): string | null {
 		return this.description;
 	}
 
@@ -92,7 +89,7 @@ export class ResourceEditorInput extends EditorInput {
 				ref.dispose();
 				this.modelReference = null;
 
-				return Promise.reject(new Error(`Unexpected model for ResourceInput: ${this.resource}`));
+				return Promise.reject<any>(new Error(`Unexpected model for ResourceInput: ${this.resource}`));
 			}
 
 			return model;

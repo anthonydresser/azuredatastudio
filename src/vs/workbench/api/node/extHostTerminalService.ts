@@ -4,21 +4,19 @@
  *--------------------------------------------------------------------------------------------*/
 
 import * as vscode from 'vscode';
+import pkg from 'vs/platform/product/node/package';
+import * as os from 'os';
 import { URI, UriComponents } from 'vs/base/common/uri';
 import * as platform from 'vs/base/common/platform';
-import * as terminalEnvironment from 'vs/workbench/parts/terminal/node/terminalEnvironment';
+import * as terminalEnvironment from 'vs/workbench/contrib/terminal/common/terminalEnvironment';
 import { Event, Emitter } from 'vs/base/common/event';
 import { ExtHostTerminalServiceShape, MainContext, MainThreadTerminalServiceShape, IMainContext, ShellLaunchConfigDto } from 'vs/workbench/api/node/extHost.protocol';
 import { ExtHostConfiguration } from 'vs/workbench/api/node/extHostConfiguration';
 import { ILogService } from 'vs/platform/log/common/log';
-import { EXT_HOST_CREATION_DELAY } from 'vs/workbench/parts/terminal/common/terminal';
-import { TerminalProcess } from 'vs/workbench/parts/terminal/node/terminalProcess';
+import { EXT_HOST_CREATION_DELAY, IShellLaunchConfig } from 'vs/workbench/contrib/terminal/common/terminal';
+import { TerminalProcess } from 'vs/workbench/contrib/terminal/node/terminalProcess';
 import { timeout } from 'vs/base/common/async';
-import { generateRandomPipeName } from 'vs/base/parts/ipc/node/ipc.net';
-import * as http from 'http';
-import * as fs from 'fs';
-import { ExtHostCommands } from 'vs/workbench/api/node/extHostCommands';
-import { sanitizeProcessEnvironment } from 'vs/base/node/processes';
+import { sanitizeProcessEnvironment } from 'vs/base/common/processes';
 
 const RENDERER_NO_PROCESS_ID = -1;
 
@@ -78,6 +76,8 @@ export class BaseExtHostTerminal {
 export class ExtHostTerminal extends BaseExtHostTerminal implements vscode.Terminal {
 	private _pidPromise: Promise<number>;
 	private _pidPromiseComplete: (value: number) => any;
+	private _cols: number | undefined;
+	private _rows: number | undefined;
 
 	private readonly _onData = new Emitter<string>();
 	public get onDidWriteData(): Event<string> {
@@ -124,6 +124,26 @@ export class ExtHostTerminal extends BaseExtHostTerminal implements vscode.Termi
 
 	public set name(name: string) {
 		this._name = name;
+	}
+
+	public get dimensions(): vscode.TerminalDimensions | undefined {
+		if (this._cols === undefined && this._rows === undefined) {
+			return undefined;
+		}
+		return {
+			columns: this._cols,
+			rows: this._rows
+		};
+	}
+
+	public setDimensions(cols: number, rows: number): boolean {
+		if (cols === this._cols && rows === this._rows) {
+			// Nothing changed
+			return false;
+		}
+		this._cols = cols;
+		this._rows = rows;
+		return true;
 	}
 
 	public get processId(): Promise<number> {
@@ -213,13 +233,17 @@ export class ExtHostTerminalRenderer extends BaseExtHostTerminal implements vsco
 	constructor(
 		proxy: MainThreadTerminalServiceShape,
 		private _name: string,
-		private _terminal: ExtHostTerminal
+		private _terminal: ExtHostTerminal,
+		id?: number
 	) {
-		super(proxy);
-		this._proxy.$createTerminalRenderer(this._name).then(id => {
-			this._runQueuedRequests(id);
-			(<any>this._terminal)._runQueuedRequests(id);
-		});
+		super(proxy, id);
+
+		if (!id) {
+			this._proxy.$createTerminalRenderer(this._name).then(id => {
+				this._runQueuedRequests(id);
+				(<any>this._terminal)._runQueuedRequests(id);
+			});
+		}
 	}
 
 	public write(data: string): void {
@@ -247,7 +271,6 @@ export class ExtHostTerminalService implements ExtHostTerminalServiceShape {
 	private _terminalProcesses: { [id: number]: TerminalProcess } = {};
 	private _terminalRenderers: ExtHostTerminalRenderer[] = [];
 	private _getTerminalPromises: { [id: number]: Promise<ExtHostTerminal> } = {};
-	private _cliServer: CLIServer | undefined;
 
 	public get activeTerminal(): ExtHostTerminal { return this._activeTerminal; }
 	public get terminals(): ExtHostTerminal[] { return this._terminals; }
@@ -258,12 +281,13 @@ export class ExtHostTerminalService implements ExtHostTerminalServiceShape {
 	public get onDidOpenTerminal(): Event<vscode.Terminal> { return this._onDidOpenTerminal && this._onDidOpenTerminal.event; }
 	private readonly _onDidChangeActiveTerminal: Emitter<vscode.Terminal | undefined> = new Emitter<vscode.Terminal | undefined>();
 	public get onDidChangeActiveTerminal(): Event<vscode.Terminal | undefined> { return this._onDidChangeActiveTerminal && this._onDidChangeActiveTerminal.event; }
+	private readonly _onDidChangeTerminalDimensions: Emitter<vscode.TerminalDimensionsChangeEvent> = new Emitter<vscode.TerminalDimensionsChangeEvent>();
+	public get onDidChangeTerminalDimensions(): Event<vscode.TerminalDimensionsChangeEvent> { return this._onDidChangeTerminalDimensions && this._onDidChangeTerminalDimensions.event; }
 
 	constructor(
 		mainContext: IMainContext,
 		private _extHostConfiguration: ExtHostConfiguration,
 		private _logService: ILogService,
-		private _commands: ExtHostCommands
 	) {
 		this._proxy = mainContext.getProxy(MainContext.MainThreadTerminalService);
 	}
@@ -288,6 +312,21 @@ export class ExtHostTerminalService implements ExtHostTerminalServiceShape {
 		this._terminals.push(terminal);
 
 		const renderer = new ExtHostTerminalRenderer(this._proxy, name, terminal);
+		this._terminalRenderers.push(renderer);
+
+		return renderer;
+	}
+
+	public async resolveTerminalRenderer(id: number): Promise<vscode.TerminalRenderer> {
+		// Check to see if the extension host already knows about this terminal.
+		for (const terminalRenderer of this._terminalRenderers) {
+			if (terminalRenderer._id === id) {
+				return terminalRenderer;
+			}
+		}
+
+		const terminal = this._getTerminalById(id);
+		const renderer = new ExtHostTerminalRenderer(this._proxy, terminal.name, terminal, terminal._id);
 		this._terminalRenderers.push(renderer);
 
 		return renderer;
@@ -319,7 +358,17 @@ export class ExtHostTerminalService implements ExtHostTerminalServiceShape {
 		});
 	}
 
-	public $acceptTerminalRendererDimensions(id: number, cols: number, rows: number): void {
+	public async $acceptTerminalDimensions(id: number, cols: number, rows: number): Promise<void> {
+		const terminal = this._getTerminalById(id);
+		if (terminal) {
+			if (terminal.setDimensions(cols, rows)) {
+				this._onDidChangeTerminalDimensions.fire({
+					terminal: terminal,
+					dimensions: terminal.dimensions
+				});
+			}
+		}
+		// When a terminal's dimensions change, a renderer's _maximum_ dimensions change
 		const renderer = this._getTerminalRendererById(id);
 		if (renderer) {
 			renderer._setMaximumDimensions(cols, rows);
@@ -342,11 +391,10 @@ export class ExtHostTerminalService implements ExtHostTerminalServiceShape {
 
 	public $acceptTerminalClosed(id: number): void {
 		const index = this._getTerminalObjectIndexById(this.terminals, id);
-		if (index === null) {
-			return;
+		if (index !== null) {
+			const terminal = this._terminals.splice(index, 1)[0];
+			this._onDidCloseTerminal.fire(terminal);
 		}
-		const terminal = this._terminals.splice(index, 1)[0];
-		this._onDidCloseTerminal.fire(terminal);
 	}
 
 	public $acceptTerminalOpened(id: number, name: string): void {
@@ -356,6 +404,7 @@ export class ExtHostTerminalService implements ExtHostTerminalServiceShape {
 			this._onDidOpenTerminal.fire(this.terminals[index]);
 			return;
 		}
+
 		const renderer = this._getTerminalRendererById(id);
 		const terminal = new ExtHostTerminal(this._proxy, name, id, renderer ? RENDERER_NO_PROCESS_ID : undefined);
 		this._terminals.push(terminal);
@@ -381,7 +430,15 @@ export class ExtHostTerminalService implements ExtHostTerminalServiceShape {
 		}
 	}
 
-	public async $createProcess(id: number, shellLaunchConfig: ShellLaunchConfigDto, activeWorkspaceRootUriComponents: UriComponents, cols: number, rows: number): Promise<void> {
+	public async $createProcess(id: number, shellLaunchConfigDto: ShellLaunchConfigDto, activeWorkspaceRootUriComponents: UriComponents, cols: number, rows: number): Promise<void> {
+		const shellLaunchConfig: IShellLaunchConfig = {
+			name: shellLaunchConfigDto.name,
+			executable: shellLaunchConfigDto.executable,
+			args: shellLaunchConfigDto.args,
+			cwd: typeof shellLaunchConfigDto.cwd === 'string' ? shellLaunchConfigDto.cwd : URI.revive(shellLaunchConfigDto.cwd),
+			env: shellLaunchConfigDto.env
+		};
+
 		// TODO: This function duplicates a lot of TerminalProcessManager.createProcess, ideally
 		// they would be merged into a single implementation.
 		const configProvider = await this._extHostConfiguration.getConfigProvider();
@@ -401,7 +458,7 @@ export class ExtHostTerminalService implements ExtHostTerminalServiceShape {
 
 		// TODO: @daniel
 		const activeWorkspaceRootUri = URI.revive(activeWorkspaceRootUriComponents);
-		const initialCwd = terminalEnvironment.getCwd(shellLaunchConfig, activeWorkspaceRootUri, terminalConfig.cwd);
+		const initialCwd = terminalEnvironment.getCwd(shellLaunchConfig, os.homedir(), activeWorkspaceRootUri, terminalConfig.cwd);
 
 		// TODO: Pull in and resolve config settings
 		// // Resolve env vars from config and shell
@@ -418,16 +475,11 @@ export class ExtHostTerminalService implements ExtHostTerminalServiceShape {
 
 		// Sanitize the environment, removing any undesirable VS Code and Electron environment
 		// variables
-		sanitizeProcessEnvironment(env);
+		sanitizeProcessEnvironment(env, 'VSCODE_IPC_HOOK_CLI');
 
 		// Continue env initialization, merging in the env from the launch
 		// config and adding keys that are needed to create the process
-		terminalEnvironment.addTerminalEnvironmentKeys(env, platform.locale, terminalConfig.get('setLocaleVariables'));
-
-		if (!this._cliServer) {
-			this._cliServer = new CLIServer(this._commands);
-		}
-		env['VSCODE_IPC_HOOK_CLI'] = this._cliServer.ipcHandlePath;
+		terminalEnvironment.addTerminalEnvironmentKeys(env, pkg.version, platform.locale, terminalConfig.get('setLocaleVariables'));
 
 		// Fork the process and listen for messages
 		this._logService.debug(`Terminal process launching on ext host`, shellLaunchConfig, initialCwd, cols, rows, env);
@@ -476,11 +528,6 @@ export class ExtHostTerminalService implements ExtHostTerminalServiceShape {
 
 		// Send exit event to main side
 		this._proxy.$sendProcessExit(id, exitCode);
-
-		if (this._cliServer && !Object.keys(this._terminalProcesses).length) {
-			this._cliServer.dispose();
-			this._cliServer = undefined;
-		}
 
 	}
 
@@ -551,75 +598,5 @@ class ApiRequest {
 
 	public run(proxy: MainThreadTerminalServiceShape, id: number) {
 		this._callback.apply(proxy, [id].concat(this._args));
-	}
-}
-
-
-class CLIServer {
-
-	private _server: http.Server;
-	private _ipcHandlePath: string | undefined;
-
-	constructor(private _commands: ExtHostCommands) {
-		this._server = http.createServer((req, res) => this.onRequest(req, res));
-		this.setup().catch(err => {
-			console.error(err);
-			return '';
-		});
-	}
-
-	public get ipcHandlePath() {
-		return this._ipcHandlePath;
-	}
-
-	private async setup(): Promise<string> {
-		this._ipcHandlePath = generateRandomPipeName();
-
-		try {
-			this._server.listen(this.ipcHandlePath);
-			this._server.on('error', err => console.error(err));
-		} catch (err) {
-			console.error('Could not start open from terminal server.');
-		}
-
-		return this.ipcHandlePath;
-	}
-	private toURIs(strs: string[]): URI[] {
-		const result: URI[] = [];
-		if (Array.isArray(strs)) {
-			for (const s of strs) {
-				try {
-					result.push(URI.parse(s));
-				} catch (e) {
-					// ignore
-				}
-			}
-		}
-		return result;
-	}
-
-	private onRequest(req: http.IncomingMessage, res: http.ServerResponse): void {
-		const chunks: string[] = [];
-		req.setEncoding('utf8');
-		req.on('data', (d: string) => chunks.push(d));
-		req.on('end', () => {
-			let { fileURIs, folderURIs, forceNewWindow, diffMode, addMode, forceReuseWindow } = JSON.parse(chunks.join(''));
-			if (folderURIs && folderURIs.length || fileURIs && fileURIs.length) {
-				if (folderURIs && folderURIs.length && !forceReuseWindow) {
-					forceNewWindow = true;
-				}
-				this._commands.executeCommand('_files.windowOpen', { folderURIs: this.toURIs(folderURIs), fileURIs: this.toURIs(fileURIs), forceNewWindow, diffMode, addMode, forceReuseWindow });
-			}
-			res.writeHead(200);
-			res.end();
-		});
-	}
-
-	dispose(): void {
-		this._server.close();
-
-		if (this._ipcHandlePath && process.platform !== 'win32' && fs.existsSync(this._ipcHandlePath)) {
-			fs.unlinkSync(this._ipcHandlePath);
-		}
 	}
 }

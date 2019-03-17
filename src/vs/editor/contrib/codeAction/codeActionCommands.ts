@@ -27,6 +27,7 @@ import { CodeActionContextMenu } from './codeActionWidget';
 import { LightBulbWidget } from './lightBulbWidget';
 import { KeybindingWeight } from 'vs/platform/keybinding/common/keybindingsRegistry';
 import { onUnexpectedError } from 'vs/base/common/errors';
+import { CodeActionSet } from 'vs/editor/contrib/codeAction/codeAction';
 
 function contextKeyForSupportedActions(kind: CodeActionKind) {
 	return ContextKeyExpr.regex(
@@ -42,13 +43,13 @@ export class QuickFixController implements IEditorContribution {
 		return editor.getContribution<QuickFixController>(QuickFixController.ID);
 	}
 
-	private _editor: ICodeEditor;
-	private _model: CodeActionModel;
-	private _codeActionContextMenu: CodeActionContextMenu;
-	private _lightBulbWidget: LightBulbWidget;
-	private _disposables: IDisposable[] = [];
+	private readonly _editor: ICodeEditor;
+	private readonly _model: CodeActionModel;
+	private readonly _codeActionContextMenu: CodeActionContextMenu;
+	private readonly _lightBulbWidget: LightBulbWidget;
+	private readonly _disposables: IDisposable[] = [];
 
-	private _activeRequest: CancelablePromise<CodeAction[]> | undefined;
+	private _activeRequest: CancelablePromise<CodeActionSet> | undefined;
 
 	constructor(editor: ICodeEditor,
 		@IMarkerService markerService: IMarkerService,
@@ -91,10 +92,10 @@ export class QuickFixController implements IEditorContribution {
 			if (newState.trigger.filter && newState.trigger.filter.kind) {
 				// Triggered for specific scope
 				newState.actions.then(fixes => {
-					if (fixes.length > 0) {
+					if (fixes.actions.length > 0) {
 						// Apply if we only have one action or requested autoApply
-						if (newState.trigger.autoApply === CodeActionAutoApply.First || (newState.trigger.autoApply === CodeActionAutoApply.IfSingle && fixes.length === 1)) {
-							this._onApplyCodeAction(fixes[0]);
+						if (newState.trigger.autoApply === CodeActionAutoApply.First || (newState.trigger.autoApply === CodeActionAutoApply.IfSingle && fixes.actions.length === 1)) {
+							this._onApplyCodeAction(fixes.actions[0]);
 							return;
 						}
 					}
@@ -126,7 +127,7 @@ export class QuickFixController implements IEditorContribution {
 		this._codeActionContextMenu.show(e.state.actions, e);
 	}
 
-	public triggerFromEditorSelection(filter?: CodeActionFilter, autoApply?: CodeActionAutoApply): Promise<CodeAction[] | undefined> {
+	public triggerFromEditorSelection(filter?: CodeActionFilter, autoApply?: CodeActionAutoApply): Promise<CodeActionSet | undefined> {
 		return this._model.trigger({ type: 'manual', filter, autoApply });
 	}
 
@@ -177,7 +178,7 @@ function showCodeActionsForEditorSelection(
 
 	const pos = editor.getPosition();
 	controller.triggerFromEditorSelection(filter, autoApply).then(codeActions => {
-		if (!codeActions || !codeActions.length) {
+		if (!codeActions || !codeActions.actions.length) {
 			MessageController.get(editor).showMessage(notAvailableMessage, pos);
 		}
 	});
@@ -253,7 +254,27 @@ export class CodeActionCommand extends EditorCommand {
 	constructor() {
 		super({
 			id: CodeActionCommand.Id,
-			precondition: ContextKeyExpr.and(EditorContextKeys.writable, EditorContextKeys.hasCodeActionsProvider)
+			precondition: ContextKeyExpr.and(EditorContextKeys.writable, EditorContextKeys.hasCodeActionsProvider),
+			description: {
+				description: `Trigger a code action`,
+				args: [{
+					name: 'args',
+					schema: {
+						'type': 'object',
+						'required': ['kind'],
+						'properties': {
+							'kind': {
+								'type': 'string'
+							},
+							'apply': {
+								'type': 'string',
+								'default': 'ifSingle',
+								'enum': ['first', 'ifSingle', 'never']
+							}
+						}
+					}
+				}]
+			}
 		});
 	}
 
@@ -297,6 +318,25 @@ export class RefactorAction extends EditorAction {
 				when: ContextKeyExpr.and(
 					EditorContextKeys.writable,
 					contextKeyForSupportedActions(CodeActionKind.Refactor)),
+			},
+			description: {
+				description: 'Refactor...',
+				args: [{
+					name: 'args',
+					schema: {
+						'type': 'object',
+						'properties': {
+							'kind': {
+								'type': 'string'
+							},
+							'apply': {
+								'type': 'string',
+								'default': 'never',
+								'enum': ['first', 'ifSingle', 'never']
+							}
+						}
+					}
+				}]
 			}
 		});
 	}
@@ -333,6 +373,25 @@ export class SourceAction extends EditorAction {
 				when: ContextKeyExpr.and(
 					EditorContextKeys.writable,
 					contextKeyForSupportedActions(CodeActionKind.Source)),
+			},
+			description: {
+				description: 'Source Action...',
+				args: [{
+					name: 'args',
+					schema: {
+						'type': 'object',
+						'properties': {
+							'kind': {
+								'type': 'string'
+							},
+							'apply': {
+								'type': 'string',
+								'default': 'never',
+								'enum': ['first', 'ifSingle', 'never']
+							}
+						}
+					}
+				}]
 			}
 		});
 	}
@@ -377,6 +436,29 @@ export class OrganizeImportsAction extends EditorAction {
 		return showCodeActionsForEditorSelection(editor,
 			nls.localize('editor.action.organize.noneMessage', "No organize imports action available"),
 			{ kind: CodeActionKind.SourceOrganizeImports, includeSourceActions: true },
+			CodeActionAutoApply.IfSingle);
+	}
+}
+
+export class FixAllAction extends EditorAction {
+
+	static readonly Id = 'editor.action.fixAll';
+
+	constructor() {
+		super({
+			id: FixAllAction.Id,
+			label: nls.localize('fixAll.label', "Fix All"),
+			alias: 'Fix All',
+			precondition: ContextKeyExpr.and(
+				EditorContextKeys.writable,
+				contextKeyForSupportedActions(CodeActionKind.SourceFixAll))
+		});
+	}
+
+	public run(_accessor: ServicesAccessor, editor: ICodeEditor): void {
+		return showCodeActionsForEditorSelection(editor,
+			nls.localize('fixAll.noneMessage', "No fix all action available"),
+			{ kind: CodeActionKind.SourceFixAll, includeSourceActions: true },
 			CodeActionAutoApply.IfSingle);
 	}
 }

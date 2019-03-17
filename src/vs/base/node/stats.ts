@@ -4,7 +4,7 @@
  *--------------------------------------------------------------------------------------------*/
 
 import { readdir, stat, exists, readFile } from 'fs';
-import { join } from 'path';
+import { join } from 'vs/base/common/path';
 import { parse, ParseError } from 'vs/base/common/json';
 
 export interface WorkspaceStatItem {
@@ -17,18 +17,19 @@ export interface WorkspaceStats {
 	configFiles: WorkspaceStatItem[];
 	fileCount: number;
 	maxFilesReached: boolean;
+	launchConfigFiles: WorkspaceStatItem[];
 }
 
 function asSortedItems(map: Map<string, number>): WorkspaceStatItem[] {
-	let a: WorkspaceStatItem[] = [];
+	const a: WorkspaceStatItem[] = [];
 	map.forEach((value, index) => a.push({ name: index, count: value }));
 	return a.sort((a, b) => b.count - a.count);
 }
 
 export function collectLaunchConfigs(folder: string): Promise<WorkspaceStatItem[]> {
-	let launchConfigs = new Map<string, number>();
+	const launchConfigs = new Map<string, number>();
 
-	let launchConfig = join(folder, '.vscode', 'launch.json');
+	const launchConfig = join(folder, '.vscode', 'launch.json');
 	return new Promise((resolve, reject) => {
 		exists(launchConfig, (doesExist) => {
 			if (doesExist) {
@@ -66,7 +67,7 @@ export function collectLaunchConfigs(folder: string): Promise<WorkspaceStatItem[
 	});
 }
 
-export function collectWorkspaceStats(folder: string, filter: string[]): Promise<WorkspaceStats> {
+export async function collectWorkspaceStats(folder: string, filter: string[]): Promise<WorkspaceStats> {
 	const configFilePatterns = [
 		{ 'tag': 'grunt.js', 'pattern': /^gruntfile\.js$/i },
 		{ 'tag': 'gulp.js', 'pattern': /^gulpfile\.js$/i },
@@ -86,8 +87,8 @@ export function collectWorkspaceStats(folder: string, filter: string[]): Promise
 		{ 'tag': 'cmake', 'pattern': /^.+\.cmake$/i }
 	];
 
-	let fileTypes = new Map<string, number>();
-	let configFiles = new Map<string, number>();
+	const fileTypes = new Map<string, number>();
+	const configFiles = new Map<string, number>();
 
 	const MAX_FILES = 20000;
 
@@ -148,7 +149,7 @@ export function collectWorkspaceStats(folder: string, filter: string[]): Promise
 		});
 	}
 
-	let addFileType = (fileType: string) => {
+	const addFileType = (fileType: string) => {
 		if (fileTypes.has(fileType)) {
 			fileTypes.set(fileType, fileTypes.get(fileType)! + 1);
 		}
@@ -157,7 +158,7 @@ export function collectWorkspaceStats(folder: string, filter: string[]): Promise
 		}
 	};
 
-	let addConfigFiles = (fileName: string) => {
+	const addConfigFiles = (fileName: string) => {
 		for (const each of configFilePatterns) {
 			if (each.pattern.test(fileName)) {
 				if (configFiles.has(each.tag)) {
@@ -169,9 +170,9 @@ export function collectWorkspaceStats(folder: string, filter: string[]): Promise
 		}
 	};
 
-	let acceptFile = (name: string) => {
+	const acceptFile = (name: string) => {
 		if (name.lastIndexOf('.') >= 0) {
-			let suffix: string | undefined = name.split('.').pop();
+			const suffix: string | undefined = name.split('.').pop();
 			if (suffix) {
 				addFileType(suffix);
 			}
@@ -179,18 +180,20 @@ export function collectWorkspaceStats(folder: string, filter: string[]): Promise
 		addConfigFiles(name);
 	};
 
-	let token: { count: number, maxReached: boolean } = { count: 0, maxReached: false };
+	const token: { count: number, maxReached: boolean } = { count: 0, maxReached: false };
 
 	return new Promise((resolve, reject) => {
-		walk(folder, filter, token, (files) => {
+		walk(folder, filter, token, async (files) => {
 			files.forEach(acceptFile);
+
+			const launchConfigs = await collectLaunchConfigs(folder);
 
 			resolve({
 				configFiles: asSortedItems(configFiles),
 				fileTypes: asSortedItems(fileTypes),
 				fileCount: token.count,
-				maxFilesReached: token.maxReached
-
+				maxFilesReached: token.maxReached,
+				launchConfigFiles: launchConfigs
 			});
 		});
 	});
