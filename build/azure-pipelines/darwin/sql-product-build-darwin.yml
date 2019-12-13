@@ -101,7 +101,7 @@ steps:
 
   - script: |
       set -e
-      ./scripts/test.sh --build --coverage --reporter mocha-junit-reporter
+      ./scripts/test.sh --build --tfs "Unit Tests" --coverage
     displayName: Run unit tests
     condition: and(succeeded(), eq(variables['RUN_TESTS'], 'true'))
 
@@ -141,16 +141,8 @@ steps:
   - task: PublishTestResults@2
     displayName: 'Publish Test Results test-results.xml'
     inputs:
-      testResultsFiles: 'test-results.xml'
-      searchFolder: '$(Build.SourcesDirectory)'
-    continueOnError: true
-    condition: and(succeeded(), eq(variables['RUN_TESTS'], 'true'))
-
-  - task: PublishTestResults@2
-    displayName: 'Publish Integration and Smoke Test Results'
-    inputs:
-      testResultsFiles: 'dawin-integration-tests-results.xml'
-      searchFolder: '$(Build.ArtifactStagingDirectory)\test-results'
+      testResultsFiles: '*.xml'
+      searchFolder: '$(Build.ArtifactStagingDirectory)/test-results'
     continueOnError: true
     condition: and(succeeded(), eq(variables['RUN_TESTS'], 'true'))
 
