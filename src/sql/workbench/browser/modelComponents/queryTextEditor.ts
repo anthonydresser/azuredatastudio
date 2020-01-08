@@ -14,7 +14,7 @@ import { IInstantiationService } from 'vs/platform/instantiation/common/instanti
 import { ITelemetryService } from 'vs/platform/telemetry/common/telemetry';
 import { IThemeService } from 'vs/platform/theme/common/themeService';
 import { IStorageService } from 'vs/platform/storage/common/storage';
-import { ITextResourceConfigurationService } from 'vs/editor/common/services/resourceConfiguration';
+import { ITextResourceConfigurationService } from 'vs/editor/common/services/textResourceConfigurationService';
 import { EditorOptions } from 'vs/workbench/common/editor';
 import { StandaloneCodeEditor } from 'vs/editor/standalone/browser/standaloneCodeEditor';
 import { CancellationToken } from 'vs/base/common/cancellation';
@@ -70,6 +70,9 @@ export class QueryTextEditor extends BaseTextEditor {
 			options.glyphMargin = true;
 			options.minimap = {
 				enabled: false
+			};
+			options.scrollbar = {
+				alwaysConsumeMouseWheel: false
 			};
 			options.overviewRulerLanes = 0;
 			options.overviewRulerBorder = false;

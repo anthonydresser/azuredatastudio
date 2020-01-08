@@ -54,6 +54,4 @@ function NotImplementedProxy<T>(name: ServiceIdentifier<T>): { new(): T } {
 registerSingleton(IExtHostTerminalService, WorkerExtHostTerminalService);
 // registerSingleton(IExtHostTask, WorkerExtHostTask); {{SQL CARBON EDIT}} disable
 // registerSingleton(IExtHostDebugService, WorkerExtHostDebugService); {{SQL CARBON EDIT}} disable
-registerSingleton(IExtensionStoragePaths, class extends NotImplementedProxy(IExtensionStoragePaths) {
-	whenReady = Promise.resolve();
-});
+registerSingleton(IExtensionStoragePaths, class extends NotImplementedProxy(IExtensionStoragePaths) { whenReady = Promise.resolve(); });
